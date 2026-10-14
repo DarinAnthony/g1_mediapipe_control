@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+tests/output/
+.idea/workspace.xml
+.idea/shelf/
+.DS_Store

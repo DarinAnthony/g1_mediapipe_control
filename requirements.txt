@@ -1,0 +1,19 @@
+# Install with:   pip install -r requirements.txt
+#
+# Works on Windows, macOS and Linux with Python 3.10 - 3.14 (3.12 recommended, like the other
+# class projects). Intel Macs need Python 3.10 - 3.12.
+# Only the packages we use directly are listed; pip picks the right helper packages for each computer.
+
+# MediaPipe 0.10.21 is the last version with mp.solutions (the API we use in class), and it only
+# exists for Python 3.12 and older. On newer Pythons we get MediaPipe 1.x instead, and the code
+# switches to its new API automatically.
+mediapipe==0.10.21 ; python_version < "3.13"
+numpy==1.26.4 ; python_version < "3.13"
+mediapipe==1.1.0 ; python_version >= "3.13"
+
+# Physics simulation. 3.10.0 is the newest version that still supports Intel Macs.
+mujoco==3.10.0
+
+# Webcam + windows. (Comes with mediapipe. Do NOT also install opencv-python or
+# opencv-python-headless: they fight over the same "cv2" module.)
+opencv-contrib-python>=4.10,<5
