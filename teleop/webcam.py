@@ -13,7 +13,7 @@ import cv2
 
 
 class Webcam:
-    def __init__(self, source=0, width=640, height=480):
+    def __init__(self, source=0, width=640, height=480, record_path=None):
         if isinstance(source, int) and sys.platform == "win32":
             # on Windows the DirectShow backend opens webcams much faster than the default one
             self.cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
@@ -36,6 +36,9 @@ class Webcam:
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.frame_time = 1.0 / fps if (self.is_file and fps > 0) else 0.0
 
+        self.record_path = record_path   # if set, every frame is also saved to this video file
+        self.recorder = None
+
         self.frame = None
         self.frame_id = 0
         self.running = True
@@ -52,6 +55,11 @@ class Webcam:
                     continue
                 time.sleep(0.01)
                 continue
+            if self.record_path:
+                if self.recorder is None:
+                    h, w = frame.shape[:2]
+                    self.recorder = cv2.VideoWriter(self.record_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (w, h))
+                self.recorder.write(frame)
             with self.lock:
                 self.frame = frame
                 self.frame_id += 1
@@ -69,3 +77,6 @@ class Webcam:
         self.running = False
         self.thread.join(timeout=1.0)
         self.cap.release()
+        if self.recorder is not None:
+            self.recorder.release()
+            print("Saved the webcam video to", self.record_path)

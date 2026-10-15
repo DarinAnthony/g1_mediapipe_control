@@ -1,0 +1,3 @@
+person.jpg: official 2012 White House portrait (photo by Pete Souza), a work of the US federal
+government and therefore in the public domain. Also used in MediaPipe's own tests.
+check_my_code.py uses it to test TODOs 2-4 without a webcam.

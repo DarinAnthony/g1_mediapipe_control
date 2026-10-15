@@ -24,8 +24,26 @@ ROBOT_EYES_SIZE = (800, 600)
 SHOW_WEBCAM_INSET = True         # small picture of your webcam in the corner of the kitchen view
 
 # ---------------------------------------------------------------- human -> robot retargeting
-# How much to smooth the motion. 0 = no smoothing (jittery), 0.9 = very smooth (laggy).
+# Simple smoothing, used when ADAPTIVE_SMOOTHING (below) is off.
+# 0 = no smoothing (jittery), 0.9 = very smooth (laggy).
 SMOOTHING = 0.6
+
+# ---------------------------------------------------------------- noisy or hidden hands
+# When your hands get close to the desk, turn sideways, or leave the picture, MediaPipe starts
+# GUESSING where they are. These settings decide how much we believe it.
+ADAPTIVE_SMOOTHING = True        # "1 Euro" filter: smooth a lot when you move slowly, a little when fast
+ONE_EURO_MIN_CUTOFF = 0.5        # arms/torso/head: smoothing while holding still (lower = smoother)
+ONE_EURO_BETA = 1.5              # higher = less lag when you move fast
+HAND_ROT_MIN_CUTOFF = 0.3        # hand rotation is the noisiest signal, so it gets extra smoothing
+HAND_ROT_BETA = 0.5
+FULL_TRUST_VISIBILITY = 0.85     # body landmarks this visible are fully trusted; at
+                                 # MIN_LANDMARK_VISIBILITY (above) they are ignored
+REJECT_GLITCHES = True           # ignore arm/hand "teleports" faster than a real person can move...
+MAX_ARM_SPEED = 600              # degrees per second your upper arm / forearm can really turn
+MAX_HAND_TURN_SPEED = 450        # degrees per second your hand can really rotate
+GLITCH_PATIENCE = 4              # ...unless the jump is still there this many frames later
+HAND_MATCH_MAX_DISTANCE = 0.15   # a detected hand must be this close to a body wrist (fraction of image)
+FINE_MODE_SCALE = 0.4            # F key: robot hands move only 40% as far as yours (precise grasping)
 
 # Copy your torso lean/twist onto the robot's waist? (If you sit at a desk and MediaPipe
 # guesses your hips badly, try turning this off.)

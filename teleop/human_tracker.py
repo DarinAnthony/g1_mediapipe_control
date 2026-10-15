@@ -25,15 +25,20 @@ else:
     from teleop import mediapipe_tasks
     mp_pose = mp_hands = mediapipe_tasks
 
-# ----- body landmark numbers (same list as in the bicep curl app) -----
+# ============================================================================ TODO 1
+# Body landmark numbers. MediaPipe Pose gives us 33 points, numbered 0 to 32.
+# Replace each 0 with the right number.
+# Use the list in your bicep curl app, or the picture at
+# https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
 NOSE = 0
-LEFT_EAR, RIGHT_EAR = 7, 8
-LEFT_SHOULDER, RIGHT_SHOULDER = 11, 12
-LEFT_ELBOW, RIGHT_ELBOW = 13, 14
-LEFT_WRIST, RIGHT_WRIST = 15, 16
-LEFT_HIP, RIGHT_HIP = 23, 24
+LEFT_EAR, RIGHT_EAR = 0, 0
+LEFT_SHOULDER, RIGHT_SHOULDER = 0, 0
+LEFT_ELBOW, RIGHT_ELBOW = 0, 0
+LEFT_WRIST, RIGHT_WRIST = 0, 0
+LEFT_HIP, RIGHT_HIP = 0, 0
+# ==================================================================================
 
-# ----- hand landmark numbers -----
+# ----- hand landmark numbers (MediaPipe Hands gives us 21 points per hand) -----
 WRIST = 0
 THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP = 1, 2, 3, 4
 INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
@@ -52,6 +57,7 @@ class HumanPose:
     body_visibility: np.ndarray = None  # (33,)   0..1, how sure MediaPipe is about each landmark
     left_hand: np.ndarray = None        # (21, 3) hand landmarks, origin near the middle of the hand
     right_hand: np.ndarray = None       # (21, 3)
+    timestamp: float = 0.0              # when the webcam frame was processed (seconds)
 
     def can_see(self, *landmark_ids):
         """True if every listed body landmark is visible enough to trust."""
@@ -62,42 +68,56 @@ class HumanPose:
 
 class HumanTracker:
     def __init__(self):
-        self.pose = mp_pose.Pose(
-            model_complexity=config.POSE_MODEL_COMPLEXITY,
-            min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE,
-        )
-        self.hands = mp_hands.Hands(
-            max_num_hands=2,
-            model_complexity=config.HAND_MODEL_COMPLEXITY,
-            min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE,
-        )
+        # ======================================================================== TODO 2
+        # Make the two MediaPipe models, like in the bicep curl app:
+        #     mp_pose.Pose()     finds your body (33 points)
+        #     mp_hands.Hands()   finds your hands (21 points each, up to 2 hands)
+        # (Optional: give them settings like in class, e.g. min_detection_confidence=0.6)
+        self.pose = None
+        self.hands = None
+        # ==============================================================================
         self.pose_results = None
         self.hand_results = None
 
     def process(self, frame_bgr):
         """Run MediaPipe on one BGR webcam frame and return a HumanPose."""
-        rgb_image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rgb_image.flags.writeable = False
-        self.pose_results = self.pose.process(rgb_image)
-        self.hand_results = self.hands.process(rgb_image)
+        human = HumanPose(timestamp=time.monotonic())
 
-        human = HumanPose()
+        # ======================================================================== TODO 3
+        # 1. OpenCV gives us BGR colors, but MediaPipe wants RGB: convert frame_bgr with cv2.cvtColor
+        # 2. Run BOTH models on the RGB image and keep what they find:
+        #        self.pose_results = ...
+        #        self.hand_results = ...
+        self.pose_results = None
+        self.hand_results = None
+        # ==============================================================================
+        if self.pose_results is None or self.hand_results is None:
+            return human   # (TODO 3 isn't done yet, so we can't see anybody)
 
         # ---- body ----
-        # pose_world_landmarks are real 3D positions in meters (pose_landmarks are 2D pixels).
+        # pose_world_landmarks are real 3D positions in meters (pose_landmarks are 2D, in the image).
         if self.pose_results.pose_world_landmarks:
             landmarks = self.pose_results.pose_world_landmarks.landmark
-            points = np.array([[p.x, p.y, p.z] for p in landmarks])
+            # ==================================================================== TODO 4
+            # `landmarks` is a list of 33 points. Each point p has p.x, p.y, p.z (meters)
+            # and p.visibility (0..1, how sure MediaPipe is that it can see that point).
+            # Make two numpy arrays:
+            #     points      shape (33, 3)   [[x, y, z], [x, y, z], ...]
+            #     visibility  shape (33,)     [v, v, v, ...]
+            # Hint: put a list comprehension inside np.array( ... ), e.g. [... for p in landmarks]
+            points = np.zeros((33, 3))
+            visibility = np.zeros(33)
+            # ==========================================================================
             human.body = to_robot_frame(points)
-            human.body_visibility = np.array([p.visibility for p in landmarks])
+            human.body_visibility = visibility
 
         # ---- hands ----
         if self.hand_results.multi_hand_world_landmarks:
             sides = self._left_or_right(self.hand_results)
             for side, world_landmarks in zip(sides, self.hand_results.multi_hand_world_landmarks):
                 points = np.array([[p.x, p.y, p.z] for p in world_landmarks.landmark])
+                if side is None:
+                    continue   # not near either of your wrists: probably a mistake
                 if side == "left":
                     human.left_hand = to_robot_frame(points)
                 else:
@@ -130,10 +150,14 @@ class HumanTracker:
 
         if len(hand_wrists) == 2:
             # two hands: the "more left" one is the left hand, the other one is the right hand
-            if leftness[0] > leftness[1]:
-                return ["left", "right"]
-            return ["right", "left"]
-        return ["left" if leftness[0] > 0 else "right"]
+            sides = ["left", "right"] if leftness[0] > leftness[1] else ["right", "left"]
+        else:
+            sides = ["left" if leftness[0] > 0 else "right"]
+
+        # a hand that is far from the wrist it was matched to is probably a false detection
+        body_wrist = {"left": left_wrist, "right": right_wrist}
+        return [side if np.linalg.norm(wrist - body_wrist[side]) < config.HAND_MATCH_MAX_DISTANCE else None
+                for side, wrist in zip(sides, hand_wrists)]
 
     def draw(self, frame_bgr):
         """Draw the skeleton and hands from the last process() call onto a copy of the frame."""
@@ -163,8 +187,10 @@ class HumanTracker:
         return image
 
     def close(self):
-        self.pose.close()
-        self.hands.close()
+        if self.pose is not None:
+            self.pose.close()
+        if self.hands is not None:
+            self.hands.close()
 
 
 class TrackerThread:

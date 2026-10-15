@@ -18,6 +18,22 @@ Two windows open:
 | **Kitchen view** | The island and the robot, seen from across the counter. Drag the mouse to orbit. Your webcam is in the corner. |
 | **Robot eyes (first person)** | The robot's head camera. It turns with **your** head, so you can look at what you're grabbing. |
 
+## Class TODOs (about 10 minutes)
+
+Five short pieces of MediaPipe code are left for you to write. Search for `TODO` in these files:
+
+| TODO | File | What you write |
+|---|---|---|
+| 1 | `teleop/human_tracker.py` | The body landmark numbers (nose, ears, shoulders, elbows, wrists, hips) |
+| 2 | `teleop/human_tracker.py` | Create the two MediaPipe models: `mp_pose.Pose()` and `mp_hands.Hands()` |
+| 3 | `teleop/human_tracker.py` | Convert the webcam picture to RGB and run both models on it |
+| 4 | `teleop/human_tracker.py` | Turn the 33 body landmarks into numpy arrays (x, y, z and visibility) |
+| 5 | `teleop/retarget.py` | `grip_amount`: how closed your hand is (like the smile mouth ratio!) |
+
+After each TODO, run **Check my code** (`check_my_code.py`). It tests your code on a photo
+and on pretend hands (no webcam needed) and tells you what to fix. The app runs the whole
+time; the robot just stands still until your TODOs are done.
+
 ## Setup
 
 **Works on:** Windows, macOS, and Linux with **Python 3.10 - 3.14** (3.12 recommended, same
@@ -67,20 +83,24 @@ In PyCharm, pick a run configuration from the dropdown at the top right and pres
 
 | Run configuration | File | Webcam? | What it does |
 |---|---|---|---|
+| **Check my code** | `check_my_code.py` | no | Checks your class TODOs |
 | **Step 1 - tracking only** | `step1_tracking_only.py` | yes | MediaPipe skeleton + the angles the robot will use |
 | **Step 2 - IK playground** | `step2_ik_playground.py` | no | Move the robot's hands with the keyboard and watch the IK |
 | **Teleop (main)** | `main.py` | yes | The full thing |
 | **Test - IK motions** | `tests/test_ik_motions.py` | no | Checks 14 upper-body motions and saves `tests/output/ik_motions.png` |
 | **Test - hand modes** | `tests/test_hand_modes.py` | no | Shakes pretend hands like MediaPipe does and measures how jittery each hand mode is |
+| **Test - occlusion** | `tests/test_occlusion.py` | no | Fake hidden-hand glitches; compares the old and new filtering |
 
 Or from a terminal with the venv activated: `python step1_tracking_only.py`, `python main.py`, etc.
-`python main.py --video clip.mp4` uses a video file instead of the webcam.
+`python main.py --video clip.mp4` uses a video file instead of the webcam, and
+`python main.py --record clip.mp4` saves your webcam session so you can replay it later.
 
 ### Teleop controls (click on a window first)
 
 | Key | |
 |---|---|
 | `SPACE` | pause / resume copying you |
+| `F` | **fine mode**: the robot's hands move only 40% as far as yours (precise grasping, less jitter) |
 | `C` | **calibrate**: sit/stand up straight, face the screen, look at it, press C |
 | `X` | clear calibration |
 | `R` | reset robot + objects |
@@ -93,6 +113,29 @@ Or from a terminal with the venv activated: `python step1_tracking_only.py`, `py
 
 **Tips:** your shoulders, elbows, and hands need to be in the picture. Good lighting helps
 MediaPipe a lot. Press `C` once at the start. That also cancels out a webcam that's tilted.
+
+### When your hands get close to the table
+
+A single webcam can't see a hand that's hidden behind the desk, turned edge-on, or out of
+frame, so MediaPipe starts **guessing**, and the guesses jump around. Code can't bring back
+what the camera can't see, but it can stop believing bad guesses:
+
+* **Visibility trust:** MediaPipe rates how visible each body point is. Half-hidden points
+  move the robot only partway, and hidden ones are ignored (the robot holds still).
+* **Glitch rejection:** an arm turning faster than 600°/s or a hand faster than 450°/s is
+  physically impossible, so that frame is ignored. If it's still there 4 frames later, it was real.
+* **Adaptive "1 Euro" smoothing:** heavy smoothing while you move slowly (lining up a grasp),
+  light smoothing when you move fast (no lag).
+* **Fine mode (`F`):** the robot hand moves 40% as far as you do, which also shrinks any
+  leftover jitter to 40%.
+
+In a simulated test with occlusion glitches (`tests/test_occlusion.py`), hand-rotation error
+dropped from 15° to 3° (worst case 46° → 6°), jitter while holding still from 1.6 cm to
+0.7 cm (0.3 cm in fine mode), and lag during fast moves from 4.0 cm to 1.8 cm.
+
+**What helps most is keeping your hands in view:** sit 1-1.5 m from the camera, tilt the
+screen down a bit, and do the task in the air in front of your chest. You don't need to touch
+your own desk; the robot copies the *direction* of your arms.
 
 ### Hand modes (`HAND_MODE` in `config.py`, or press `H`)
 
@@ -156,6 +199,7 @@ All the tunable numbers (smoothing, gains, IK weights, window sizes) are in **`c
 
 ```
 main.py                    full teleop
+check_my_code.py           checks the class TODOs
 step1_tracking_only.py     lesson 1: MediaPipe only
 step2_ik_playground.py     lesson 2: keyboard-controlled IK, no webcam
 config.py                  every number you might want to change
@@ -164,7 +208,7 @@ teleop/
   human_tracker.py         MediaPipe Pose + Hands → HumanPose (+ background thread)
   mediapipe_tasks.py       automatic fallback for MediaPipe 1.x (Python 3.13+), no mp.solutions there
   geometry.py              frames, calc_angle, palm rotation, torso rotation, head angles
-  smoothing.py             exponential moving average filters
+  smoothing.py             smoothing filters (moving average, 1 Euro) and the glitch filter
   retarget.py              HumanPose → RobotTargets
   ik.py                    upper-body inverse kinematics
   kitchen_sim.py           MuJoCo model, motors, cameras, target drawing
@@ -172,6 +216,7 @@ teleop/
   fake_human.py            builds pretend HumanPoses (for tests / no-webcam demos)
 tests/test_ik_motions.py   motion test suite
 tests/test_hand_modes.py   finger-noise test for the three hand modes
+tests/test_occlusion.py    hidden-hand glitch test for the filtering
 assets/                    robot + kitchen MJCF, meshes, MediaPipe model files (for the fallback)
 ```
 

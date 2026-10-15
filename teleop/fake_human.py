@@ -90,13 +90,14 @@ def hand_landmarks(rotation, side, closure=0.0):
 
 
 def make_human(torso=(0, 0, 0), left_arm=(DOWN, FORWARD), right_arm=(DOWN, FORWARD),
-               left_hand=None, right_hand=None, closure=(0.0, 0.0), head=(0.0, 0.0)):
+               left_hand=None, right_hand=None, closure=(0.0, 0.0), head=(0.0, 0.0), timestamp=0.0):
     """
     torso:     (yaw, pitch, roll) in degrees
     left_arm:  (upper arm direction, forearm direction), world axes
     left_hand: hand rotation (3x3, from hand_frame), or None for "handshake" (fingers forward)
     closure:   (left, right) how closed each hand is, 0..1
     head:      (yaw, pitch) of your head relative to your torso, degrees (pitch > 0 = look down)
+    timestamp: time of this pretend webcam frame, in seconds
     """
     body = np.zeros((33, 3))
     R = torso_rot(*torso)
@@ -125,4 +126,4 @@ def make_human(torso=(0, 0, 0), left_arm=(DOWN, FORWARD), right_arm=(DOWN, FORWA
     visibility = np.zeros(33)
     visibility[[0, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24]] = 1.0
     return HumanPose(body=body, body_visibility=visibility,
-                     left_hand=hands["left"], right_hand=hands["right"])
+                     left_hand=hands["left"], right_hand=hands["right"], timestamp=timestamp)

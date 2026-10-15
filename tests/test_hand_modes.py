@@ -30,8 +30,8 @@ def run(mode, closures, robot, seed=0):
     rng = np.random.default_rng(seed)
     retargeter = Retargeter(robot)
     commands, switches, was_closed = [], 0, False
-    for closure in closures:
-        human = make_human(closure=(closure, closure))
+    for frame, closure in enumerate(closures):
+        human = make_human(closure=(closure, closure), timestamp=frame / 20)
         human.left_hand = human.left_hand + rng.normal(0, NOISE, human.left_hand.shape)
         human.right_hand = human.right_hand + rng.normal(0, NOISE, human.right_hand.shape)
         targets = retargeter.update(human)

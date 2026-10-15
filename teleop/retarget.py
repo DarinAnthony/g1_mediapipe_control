@@ -23,8 +23,9 @@ import numpy as np
 
 import config
 from teleop import human_tracker as ht
-from teleop.geometry import bend, head_yaw_pitch, normalize, palm_rotation, torso_rotation
-from teleop.smoothing import RotationSmoother, Smoother
+from teleop.geometry import bend, head_yaw_pitch, normalize, palm_rotation, rotation_angle, torso_rotation
+from teleop.smoothing import (JumpFilter, OneEuroFilter, OneEuroRotationFilter, RotationSmoother,
+                              Smoother)
 
 SIDES = ("left", "right")
 
@@ -81,9 +82,16 @@ def grip_amount(hand):
     palm length (wrist -> middle knuckle). Dividing makes it work for big and small hands and
     near or far from the camera. Open hand: about 1.8-1.9. Fist: about 0.8-1.0.
     """
-    palm_length = np.linalg.norm(hand[ht.MIDDLE_MCP] - hand[ht.WRIST])
-    tip_distances = [np.linalg.norm(hand[tip] - hand[ht.WRIST]) for tip in (ht.INDEX_TIP, ht.MIDDLE_TIP)]
-    ratio = np.mean(tip_distances) / palm_length
+    # ============================================================================ TODO 5
+    # Like the mouth aspect ratio from smile detection, but for your hand.
+    # hand[ht.WRIST], hand[ht.INDEX_TIP], ... are points [x, y, z] in meters, and
+    # the distance between two points a and b is np.linalg.norm(a - b)
+    palm_length = 0.0     # distance from the wrist to the middle knuckle (ht.MIDDLE_MCP)
+    tip_distance = 0.0    # AVERAGE distance from the wrist to ht.INDEX_TIP and ht.MIDDLE_TIP
+    ratio = config.GRIP_OPEN_RATIO   # tip_distance divided by palm_length (for now: "open hand")
+    # ==================================================================================
+
+    # turn the ratio into a grip number: an open hand (GRIP_OPEN_RATIO) -> 0, a fist (GRIP_CLOSED_RATIO) -> 1
     grip = (config.GRIP_OPEN_RATIO - ratio) / (config.GRIP_OPEN_RATIO - config.GRIP_CLOSED_RATIO)
     return float(np.clip(grip, 0.0, 1.0))
 
@@ -127,14 +135,46 @@ class Retargeter:
         self.camera_fix = np.eye(3)
         self.head_zero = np.array([0.0, config.HEAD_NEUTRAL_PITCH])   # (yaw, pitch) of "looking straight"
 
-        # ---- smoothing ----
-        self.torso_smoother = RotationSmoother(config.SMOOTHING)
-        self.upper_arm_smoother = {s: Smoother(config.SMOOTHING) for s in SIDES}
-        self.forearm_smoother = {s: Smoother(config.SMOOTHING) for s in SIDES}
-        self.wrist_rot_smoother = {s: RotationSmoother(config.SMOOTHING) for s in SIDES}
+        # ---- fine mode (press F): robot hands move only FINE_MODE_SCALE as far as yours ----
+        self.fine_anchor = None
+
+        # ---- filters ----
+        self.last_time = None
+        self.torso_filter = self._make_filter(rotation=True)
+        self.upper_arm_filter = {s: self._make_filter() for s in SIDES}
+        self.forearm_filter = {s: self._make_filter() for s in SIDES}
+        self.wrist_rot_filter = {s: self._make_filter(rotation=True, hand=True) for s in SIDES}
+        self.head_filter = self._make_filter()
         self.finger_smoother = {s: Smoother(config.FINGER_SMOOTHING) for s in SIDES}
         self.grip_smoother = {s: Smoother(config.GRIP_SMOOTHING) for s in SIDES}
-        self.head_smoother = Smoother(config.SMOOTHING)
+
+        # glitch catchers: the last measurement we believed, and how big a jump we allow per frame
+        on = config.REJECT_GLITCHES
+        self.arm_jump = {s: JumpFilter(config.MAX_ARM_SPEED if on else None, config.GLITCH_PATIENCE)
+                         for s in SIDES}
+        self.hand_jump = {s: JumpFilter(config.MAX_HAND_TURN_SPEED if on else None, config.GLITCH_PATIENCE)
+                          for s in SIDES}
+        self.last_arm = {s: None for s in SIDES}
+        self.last_palm = {s: None for s in SIDES}
+
+    @staticmethod
+    def _make_filter(rotation=False, hand=False):
+        """Adaptive 1-Euro filter, or the simple average if ADAPTIVE_SMOOTHING is off."""
+        if config.ADAPTIVE_SMOOTHING:
+            min_cutoff = config.HAND_ROT_MIN_CUTOFF if hand else config.ONE_EURO_MIN_CUTOFF
+            beta = config.HAND_ROT_BETA if hand else config.ONE_EURO_BETA
+            return (OneEuroRotationFilter if rotation else OneEuroFilter)(min_cutoff, beta)
+        return (RotationSmoother if rotation else Smoother)(config.SMOOTHING)
+
+    @staticmethod
+    def _trust(human, landmark_ids):
+        """
+        0..1: how much to believe these landmarks. MediaPipe gives each body landmark a
+        'visibility'. Partly hidden landmarks move the robot only a little, hidden ones not at all.
+        """
+        visibility = min(human.body_visibility[i] for i in landmark_ids)
+        trust = (visibility - config.MIN_LANDMARK_VISIBILITY) / (config.FULL_TRUST_VISIBILITY - config.MIN_LANDMARK_VISIBILITY)
+        return float(np.clip(trust, 0.0, 1.0))
 
     # ------------------------------------------------------------------ torso
     def _measure_torso(self, body):
@@ -144,11 +184,12 @@ class Retargeter:
         return torso_rotation(body[ht.LEFT_SHOULDER], body[ht.RIGHT_SHOULDER],
                               body[ht.LEFT_HIP], body[ht.RIGHT_HIP])
 
-    def _update_torso(self, human, body):
-        if not human.can_see(ht.LEFT_SHOULDER, ht.RIGHT_SHOULDER):
+    def _update_torso(self, human, body, dt):
+        if not config.TRACK_TORSO or human.body is None:
             return
-        if config.TRACK_TORSO:
-            self.torso_rot = self.torso_smoother(self._measure_torso(body))
+        trust = self._trust(human, (ht.LEFT_SHOULDER, ht.RIGHT_SHOULDER))
+        if trust > 0:
+            self.torso_rot = self.torso_filter(self._measure_torso(body), dt, trust)
 
     # ------------------------------------------------------------------ arms
     def _arm_indices(self, side):
@@ -156,21 +197,47 @@ class Retargeter:
             return ht.LEFT_SHOULDER, ht.LEFT_ELBOW, ht.LEFT_WRIST
         return ht.RIGHT_SHOULDER, ht.RIGHT_ELBOW, ht.RIGHT_WRIST
 
-    def _update_arm(self, human, body, side):
+    def _update_arm(self, human, body, side, dt):
+        if human.body is None:
+            return
         shoulder_id, elbow_id, wrist_id = self._arm_indices(side)
-        if not human.can_see(shoulder_id, elbow_id, wrist_id):
+        trust = self._trust(human, (shoulder_id, elbow_id, wrist_id))
+        if trust == 0:
             return   # can't see this arm: keep the old goal
-        shoulder, elbow, wrist = body[shoulder_id], body[elbow_id], body[wrist_id]
-        self.upper_arm_dir[side] = normalize(self.upper_arm_smoother[side](normalize(elbow - shoulder)))
-        self.forearm_dir[side] = normalize(self.forearm_smoother[side](normalize(wrist - elbow)))
+        upper = normalize(body[elbow_id] - body[shoulder_id])
+        fore = normalize(body[wrist_id] - body[elbow_id])
 
-    def _update_hand(self, human, side):
+        # did the arm "teleport" since the last measurement we believed? Then it's probably a glitch.
+        if self.last_arm[side] is not None:
+            last_upper, last_fore = self.last_arm[side]
+            jump = max(np.arccos(np.clip(np.dot(upper, last_upper), -1, 1)),
+                       np.arccos(np.clip(np.dot(fore, last_fore), -1, 1)))
+            if not self.arm_jump[side].accept(np.degrees(jump), dt):
+                return
+        self.last_arm[side] = (upper, fore)
+
+        self.upper_arm_dir[side] = normalize(self.upper_arm_filter[side](upper, dt, trust))
+        self.forearm_dir[side] = normalize(self.forearm_filter[side](fore, dt, trust))
+
+    # ------------------------------------------------------------------ hands
+    def _update_hand(self, human, side, dt):
         hand = human.left_hand if side == "left" else human.right_hand
         if hand is None:
             return
+        # a squashed or blown-up hand means MediaPipe is guessing (usually a hidden hand)
+        palm_length = np.linalg.norm(hand[ht.MIDDLE_MCP] - hand[ht.WRIST])
+        if not 0.05 < palm_length < 0.15:
+            return
+
+        palm = self.camera_fix @ palm_rotation(hand)
+        if self.last_palm[side] is not None:
+            turn = rotation_angle(self.last_palm[side].T @ palm)
+            if not self.hand_jump[side].accept(np.degrees(turn), dt):
+                return   # the whole hand estimate flipped around: skip this frame (rotation AND grip)
+        self.last_palm[side] = palm
+
         if config.USE_HAND_ORIENTATION:
-            palm = self.camera_fix @ palm_rotation(hand)
-            self.wrist_rot[side] = self.wrist_rot_smoother[side](palm)
+            self.wrist_rot[side] = self.wrist_rot_filter[side](palm, dt)
 
         self.grip[side] = float(self.grip_smoother[side](grip_amount(hand)))
 
@@ -202,27 +269,31 @@ class Retargeter:
         nose, left_ear, right_ear = (torso.T @ body[i] for i in (ht.NOSE, ht.LEFT_EAR, ht.RIGHT_EAR))
         return np.array(head_yaw_pitch(nose, left_ear, right_ear))
 
-    def _update_head(self, human, body):
+    def _update_head(self, human, body, dt):
         angles = self._head_angles(human, body)
         if angles is None:
             return
-        yaw, pitch = self.head_smoother(angles - self.head_zero)
+        yaw, pitch = self.head_filter(angles - self.head_zero, dt)
         self.neck_yaw = config.HEAD_YAW_GAIN * yaw
         self.neck_pitch = config.HEAD_PITCH_OFFSET + config.HEAD_PITCH_GAIN * pitch
 
     # ------------------------------------------------------------------ public
     def update(self, human):
         """Read a HumanPose, update the goals and return them as RobotTargets."""
+        # time since the last measurement (the adaptive filters need it)
+        dt = 1 / 30 if self.last_time is None else float(np.clip(human.timestamp - self.last_time, 0.005, 0.2))
+        self.last_time = human.timestamp
+
         body = None if human.body is None else human.body @ self.camera_fix.T
-        self._update_torso(human, body)
+        self._update_torso(human, body, dt)
         for side in SIDES:
-            self._update_arm(human, body, side)
-            self._update_hand(human, side)
-        self._update_head(human, body)
+            self._update_arm(human, body, side, dt)
+            self._update_hand(human, side, dt)
+        self._update_head(human, body, dt)
         return self.targets()
 
-    def targets(self):
-        """Build robot target points from the current goals, using the ROBOT's bone lengths."""
+    def _arm_targets(self):
+        """Shoulder, elbow and wrist targets from the current goals, using the ROBOT's bone lengths."""
         pivot = self.robot["torso_pivot"]
         shoulder_pos, elbow_pos, wrist_pos = {}, {}, {}
         for side in SIDES:
@@ -231,6 +302,16 @@ class Retargeter:
             shoulder_pos[side] = pivot + self.torso_rot @ (arm["shoulder"] - pivot)
             elbow_pos[side] = shoulder_pos[side] + arm["upper_arm_length"] * self.upper_arm_dir[side]
             wrist_pos[side] = elbow_pos[side] + arm["forearm_length"] * self.forearm_dir[side]
+        return shoulder_pos, elbow_pos, wrist_pos
+
+    def targets(self):
+        shoulder_pos, elbow_pos, wrist_pos = self._arm_targets()
+        if self.fine_anchor is not None:
+            # fine mode: only move FINE_MODE_SCALE as far as you do, starting where you pressed F
+            for side in SIDES:
+                anchor_elbow, anchor_wrist = self.fine_anchor[side]
+                elbow_pos[side] = anchor_elbow + config.FINE_MODE_SCALE * (elbow_pos[side] - anchor_elbow)
+                wrist_pos[side] = anchor_wrist + config.FINE_MODE_SCALE * (wrist_pos[side] - anchor_wrist)
         return RobotTargets(
             torso_rot=self.torso_rot.copy(),
             shoulder_pos=shoulder_pos,
@@ -241,6 +322,15 @@ class Retargeter:
             neck_yaw=self.neck_yaw,
             neck_pitch=self.neck_pitch,
         )
+
+    def toggle_fine_mode(self):
+        """F key: precise, slow hands for lining up a grasp (also shrinks any leftover jitter)."""
+        if self.fine_anchor is None:
+            _, elbow_pos, wrist_pos = self._arm_targets()
+            self.fine_anchor = {s: (elbow_pos[s].copy(), wrist_pos[s].copy()) for s in SIDES}
+        else:
+            self.fine_anchor = None
+        return self.fine_anchor is not None
 
     def calibrate(self, human):
         """
@@ -254,10 +344,13 @@ class Retargeter:
         angles = self._head_angles(human, body)
         if angles is not None:
             self.head_zero = angles
-        for smoother in [self.torso_smoother, self.head_smoother,
-                         *self.upper_arm_smoother.values(), *self.forearm_smoother.values(),
-                         *self.wrist_rot_smoother.values()]:
-            smoother.reset()
+        for f in [self.torso_filter, self.head_filter, *self.upper_arm_filter.values(),
+                  *self.forearm_filter.values(), *self.wrist_rot_filter.values()]:
+            f.reset()
+        self.last_arm = {s: None for s in SIDES}
+        self.last_palm = {s: None for s in SIDES}
+        for f in [*self.arm_jump.values(), *self.hand_jump.values()]:
+            f.reset()
 
     def clear_calibration(self):
         self.camera_fix = np.eye(3)

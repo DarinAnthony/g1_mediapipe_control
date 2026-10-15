@@ -16,10 +16,13 @@ Keys (click on one of the windows first):
     V      show / hide the webcam picture
     K      switch between the mouse camera and the fixed kitchen camera
     H      hand mode: open_close -> grip -> fingers (see config.py)
+    F      fine mode on/off: the robot's hands move only 40% as far as yours (precise grasping)
     [ ]    zoom in / out
     Q/ESC  quit
 
-Optional: python main.py --video some_video.mp4   (use a video file instead of the webcam)
+Optional:
+    python main.py --video some_video.mp4    use a video file instead of the webcam
+    python main.py --record my_session.mp4   also save the webcam video (to replay with --video)
 """
 import os
 
@@ -45,10 +48,12 @@ from teleop.webcam import Webcam
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", default=None, help="video file to use instead of the webcam")
+    parser.add_argument("--record", default=None, help="save the webcam video to this .mp4 file")
     args = parser.parse_args()
 
     # ---------------------------------------------------------------- set everything up
-    webcam = Webcam(args.video or config.WEBCAM_INDEX, config.WEBCAM_WIDTH, config.WEBCAM_HEIGHT)
+    webcam = Webcam(args.video or config.WEBCAM_INDEX, config.WEBCAM_WIDTH, config.WEBCAM_HEIGHT,
+                    record_path=args.record)
     tracking = TrackerThread(webcam, HumanTracker())   # MediaPipe runs in the background
     sim = KitchenSim()
     retargeter = Retargeter(sim.robot_body_info())
@@ -117,12 +122,13 @@ def main():
                 state = " CLOSED" if retargeter.hand_closed[side] else " open"
             hands.append(f"{side[0].upper()} {retargeter.grip[side]:.2f}{state}")
         draw_text_lines(kitchen, [
-            f"{'TELEOP ON' if teleop_on else 'PAUSED (space)'}   {fps:4.1f} fps",
+            f"{'TELEOP ON' if teleop_on else 'PAUSED (space)'}"
+            f"{'   FINE MODE' if retargeter.fine_anchor is not None else ''}   {fps:4.1f} fps",
             "tracking: " + (", ".join(seen) if seen else "nobody found"),
             f"hands ({config.HAND_MODE}): " + "   ".join(hands),
         ])
         draw_text_lines(kitchen, [
-            "SPACE pause  C calibrate  X clear  R reset  H hand mode",
+            "SPACE pause  F fine  C calibrate  X clear  R reset  H hand mode",
             "T targets  V webcam  K camera  [ ] zoom  Q quit",
         ], corner="bottom-left", scale=0.5)
 
@@ -148,6 +154,8 @@ def main():
             sim.show_targets = not sim.show_targets
         elif key == ord("v"):
             show_webcam = not show_webcam
+        elif key == ord("f"):
+            print("Fine mode", "ON" if retargeter.toggle_fine_mode() else "off")
         elif key == ord("h"):
             modes = ["open_close", "grip", "fingers"]
             config.HAND_MODE = modes[(modes.index(config.HAND_MODE) + 1) % len(modes)]

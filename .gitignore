@@ -5,3 +5,8 @@ tests/output/
 .idea/workspace.xml
 .idea/shelf/
 .DS_Store
+MUJOCO_LOG.TXT
+# webcam recordings (python main.py --record ...) are personal, keep them out of git
+*.mp4
+*.avi
+*.mov
